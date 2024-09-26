@@ -1,151 +1,99 @@
 import streamlit as st
-import pandas as pd
-import math
-from pathlib import Path
+from pypdf import PdfReader
+from langchain_text_splitters import RecursiveCharacterTextSplitter
+from sklearn.feature_extraction.text import CountVectorizer
+from sklearn.metrics.pairwise import cosine_similarity
 
-# Set the title and favicon that appear in the Browser's tab bar.
-st.set_page_config(
-    page_title='GDP dashboard',
-    page_icon=':earth_americas:', # This is an emoji shortcode. Could be a URL too.
-)
+import os
+import time
+# from dotenv import load_dotenv
 
-# -----------------------------------------------------------------------------
-# Declare some useful functions.
+# load_dotenv()
 
-@st.cache_data
-def get_gdp_data():
-    """Grab GDP data from a CSV file.
-
-    This uses caching to avoid having to read the file every time. If we were
-    reading from an HTTP endpoint instead of a file, it's a good idea to set
-    a maximum age to the cache with the TTL argument: @st.cache_data(ttl='1d')
-    """
-
-    # Instead of a CSV on disk, you could read from an HTTP endpoint here too.
-    DATA_FILENAME = Path(__file__).parent/'data/gdp_data.csv'
-    raw_gdp_df = pd.read_csv(DATA_FILENAME)
-
-    MIN_YEAR = 1960
-    MAX_YEAR = 2022
-
-    # The data above has columns like:
-    # - Country Name
-    # - Country Code
-    # - [Stuff I don't care about]
-    # - GDP for 1960
-    # - GDP for 1961
-    # - GDP for 1962
-    # - ...
-    # - GDP for 2022
-    #
-    # ...but I want this instead:
-    # - Country Name
-    # - Country Code
-    # - Year
-    # - GDP
-    #
-    # So let's pivot all those year-columns into two: Year and GDP
-    gdp_df = raw_gdp_df.melt(
-        ['Country Code'],
-        [str(x) for x in range(MIN_YEAR, MAX_YEAR + 1)],
-        'Year',
-        'GDP',
-    )
-
-    # Convert years from string to integers
-    gdp_df['Year'] = pd.to_numeric(gdp_df['Year'])
-
-    return gdp_df
-
-gdp_df = get_gdp_data()
-
-# -----------------------------------------------------------------------------
-# Draw the actual page
-
-# Set the title that appears at the top of the page.
-'''
-# :earth_americas: GDP dashboard
-
-Browse GDP data from the [World Bank Open Data](https://data.worldbank.org/) website. As you'll
-notice, the data only goes to 2022 right now, and datapoints for certain years are often missing.
-But it's otherwise a great (and did I mention _free_?) source of data.
-'''
-
-# Add some spacing
-''
-''
-
-min_value = gdp_df['Year'].min()
-max_value = gdp_df['Year'].max()
-
-from_year, to_year = st.slider(
-    'Which years are you interested in?',
-    min_value=min_value,
-    max_value=max_value,
-    value=[min_value, max_value])
-
-countries = gdp_df['Country Code'].unique()
-
-if not len(countries):
-    st.warning("Select at least one country")
-
-selected_countries = st.multiselect(
-    'Which countries would you like to view?',
-    countries,
-    ['DEU', 'FRA', 'GBR', 'BRA', 'MEX', 'JPN'])
-
-''
-''
-''
-
-# Filter the data
-filtered_gdp_df = gdp_df[
-    (gdp_df['Country Code'].isin(selected_countries))
-    & (gdp_df['Year'] <= to_year)
-    & (from_year <= gdp_df['Year'])
-]
-
-st.header('GDP over time', divider='gray')
-
-''
-
-st.line_chart(
-    filtered_gdp_df,
-    x='Year',
-    y='GDP',
-    color='Country Code',
-)
-
-''
-''
+import requests
 
 
-first_year = gdp_df[gdp_df['Year'] == from_year]
-last_year = gdp_df[gdp_df['Year'] == to_year]
+headers = {"Authorization": "Bearer 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"}
 
-st.header(f'GDP in {to_year}', divider='gray')
+def query(payload):
+	response = requests.post("https://api-inference.huggingface.co/models/deepset/roberta-base-squad2", headers=headers, json=payload)
+	return response.json()
+	
 
-''
+st.title('PDF Qns & Ans Chatbot')
 
-cols = st.columns(4)
+st.write('This is a simple chatbot that can answer questions about the pdf uploaded by the user')
 
-for i, country in enumerate(selected_countries):
-    col = cols[i % len(cols)]
+search_method=st.radio("Choose the search method",["Entire Document","Related Chunks"])
 
-    with col:
-        first_gdp = first_year[first_year['Country Code'] == country]['GDP'].iat[0] / 1000000000
-        last_gdp = last_year[last_year['Country Code'] == country]['GDP'].iat[0] / 1000000000
+uploaded_file = st.file_uploader("Choose a PDF file", type="pdf")
 
-        if math.isnan(first_gdp):
-            growth = 'n/a'
-            delta_color = 'off'
+def read_pdf(file):
+    pdf_reader = PdfReader(file)
+    text = ''
+    for page in pdf_reader.pages:
+        text += page.extract_text()
+    return text
+
+# Chunking text
+def chunk_text(text, chunk_size=500, chunk_overlap=50):
+    splitter = RecursiveCharacterTextSplitter(chunk_size=chunk_size, chunk_overlap=chunk_overlap)
+    chunks = splitter.split_text(text)
+    return chunks
+
+def find_related_chunks(prompt, chunks, threshold=0.1):
+    # Create embeddings using CountVectorizer
+    vectorizer = CountVectorizer().fit_transform([prompt] + chunks)
+    
+    # Compute cosine similarity between the prompt and each chunk
+    similarity_matrix = cosine_similarity(vectorizer[0:1], vectorizer[1:])
+    
+    # Get chunks with similarity greater than the threshold
+    related_chunks = [chunks[i] for i in range(len(chunks)) if similarity_matrix[0][i] >= threshold]
+    
+    return related_chunks
+
+def response_generator(response):
+    for word in response.split():
+        yield word + " "
+        time.sleep(0.05)
+
+
+
+
+if uploaded_file is not None:
+    text=read_pdf(uploaded_file)
+    chunks = chunk_text(text)
+    
+    # now clear the previous title and file uploader
+    st.empty()
+    if "messages" not in st.session_state:
+        st.session_state.messages = []
+
+    # Display chat messages from history on app rerun
+    for message in st.session_state.messages:
+        with st.chat_message(message["role"]):
+            st.markdown(message["content"])
+
+    if prompt := st.chat_input("Ask something"):
+
+        st.session_state.messages.append({"role": "user", "content": prompt})
+        with st.chat_message("user"):
+            st.markdown(prompt)
+        if search_method=="Entire Document":
+            context=text
         else:
-            growth = f'{last_gdp / first_gdp:,.2f}x'
-            delta_color = 'normal'
-
-        st.metric(
-            label=f'{country} GDP',
-            value=f'{last_gdp:,.0f}B',
-            delta=growth,
-            delta_color=delta_color
-        )
+            related_chunks = find_related_chunks(prompt, chunks)
+            # Combine related chunks into one context for the model
+            context = " ".join(related_chunks)
+        with st.chat_message("assistant"):
+            output = query({
+            "inputs": {
+            "question": prompt,
+            "context":text}})
+            response = st.write_stream(response_generator(output['answer']))
+        # Add assistant response to chat history
+        st.session_state.messages.append({"role": "assistant", "content": response})
+ 
+else:
+    st.write('Please upload a file')

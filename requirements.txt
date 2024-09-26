@@ -1,2 +1,13 @@
 streamlit
 pandas
+unstructured
+tiktoken
+pinecone-client
+pypdf
+PyPDF2
+openai
+langchain
+pandas 
+numpy
+python-dotenv
+scikit-learn
